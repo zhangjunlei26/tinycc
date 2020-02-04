@@ -33,6 +33,8 @@ static const char help[] =
     "  -o outfile  set output filename\n"
     "  -run        run compiled source\n"
     "  -fflag      set or reset (with 'no-' prefix) 'flag' (see tcc -hh)\n"
+    "  -std=c99    Conform to the ISO 1999 C standard (default).\n"
+    "  -std=c11    Conform to the ISO 2011 C standard.\n"
     "  -Wwarning   set or reset (with 'no-' prefix) 'warning' (see tcc -hh)\n"
     "  -w          disable all warnings\n"
     "  -v -vv      show version, show search paths or loaded files\n"
@@ -59,10 +61,10 @@ static const char help[] =
     "  -b          compile with built-in memory and bounds checker (implies -g)\n"
 #endif
 #ifdef CONFIG_TCC_BACKTRACE
-    "  -bt N       show N callers in stack traces\n"
+    "  -bt[N]      link with backtrace (stack dump) support [show max N callers]\n"
 #endif
     "Misc. options:\n"
-    "  -x[c|a|n]   specify type of the next infile\n"
+    "  -x[c|a|b|n] specify type of the next infile (C,ASM,BIN,NONE)\n"
     "  -nostdinc   do not use standard system include paths\n"
     "  -nostdlib   do not link with standard crt and libraries\n"
     "  -Bdir       set tcc's private include/library dir\n"
@@ -91,7 +93,7 @@ static const char help2[] =
     "  -print-search-dirs            print search paths\n"
     "  -dt                           with -run/-E: auto-define 'test_...' macros\n"
     "Ignored options:\n"
-    "  --param  -pedantic  -pipe  -s  -std  -traditional\n"
+    "  --param  -pedantic  -pipe  -s  -traditional\n"
     "-W... warnings:\n"
     "  all                           turn on some (*) warnings\n"
     "  error                         stop after first warning\n"
@@ -117,6 +119,7 @@ static const char help2[] =
     "  -nostdlib                     do not link with standard crt/libs\n"
     "  -[no-]whole-archive           load lib(s) fully/only as needed\n"
     "  -export-all-symbols           same as -rdynamic\n"
+    "  -export-dynamic               same as -rdynamic\n"
     "  -image-base= -Ttext=          set base address of executable\n"
     "  -section-alignment=           set section alignment in executable\n"
 #ifdef TCC_TARGET_PE
@@ -182,8 +185,10 @@ static void print_search_dirs(TCCState *s)
     /* print_dirs("programs", NULL, 0); */
     print_dirs("include", s->sysinclude_paths, s->nb_sysinclude_paths);
     print_dirs("libraries", s->library_paths, s->nb_library_paths);
+#ifdef TCC_TARGET_PE
+    printf("libtcc1:\n  %s/lib/"TCC_LIBTCC1"\n", s->tcc_lib_path);
+#else
     printf("libtcc1:\n  %s/"TCC_LIBTCC1"\n", s->tcc_lib_path);
-#ifndef TCC_TARGET_PE
     print_dirs("crt", s->crt_paths, s->nb_crt_paths);
     printf("elfinterp:\n  %s\n",  DEFAULT_ELFINTERP(s));
 #endif
@@ -245,8 +250,8 @@ static unsigned getclock_ms(void)
 
 int main(int argc0, char **argv0)
 {
-    TCCState *s;
-    int ret, opt, n = 0, t = 0;
+    TCCState *s, *s1;
+    int ret, opt, n = 0, t = 0, done;
     unsigned start_time = 0;
     const char *first_file;
     int argc; char **argv;
@@ -254,14 +259,14 @@ int main(int argc0, char **argv0)
 
 redo:
     argc = argc0, argv = argv0;
-    s = tcc_new();
+    s = s1 = tcc_new();
     opt = tcc_parse_args(s, &argc, &argv, 1);
 
-    if ((n | t) == 0) {
+    if (n == 0) {
         if (opt == OPT_HELP)
-            return printf(help), 1;
+            return fputs(help, stdout), 0;
         if (opt == OPT_HELP2)
-            return printf(help2), 1;
+            return fputs(help2, stdout), 0;
         if (opt == OPT_M32 || opt == OPT_M64)
             tcc_tool_cross(s, argv, opt); /* never returns */
         if (s->verbose)
@@ -282,12 +287,11 @@ redo:
             return 0;
         }
 
-        n = s->nb_files;
-        if (n == 0)
+        if (s->nb_files == 0)
             tcc_error("no input files\n");
 
         if (s->output_type == TCC_OUTPUT_PREPROCESS) {
-            if (s->outfile) {
+            if (s->outfile && 0!=strcmp("-",s->outfile)) {
                 ppfp = fopen(s->outfile, "w");
                 if (!ppfp)
                     tcc_error("could not write '%s'", s->outfile);
@@ -295,7 +299,7 @@ redo:
         } else if (s->output_type == TCC_OUTPUT_OBJ && !s->option_r) {
             if (s->nb_libraries)
                 tcc_error("cannot specify libraries with -c");
-            if (n > 1 && s->outfile)
+            if (s->nb_files > 1 && s->outfile)
                 tcc_error("cannot specify output file with -c many files");
         } else {
             if (s->option_pthread)
@@ -313,15 +317,21 @@ redo:
     s->ppfp = ppfp;
 
     if ((s->output_type == TCC_OUTPUT_MEMORY
-      || s->output_type == TCC_OUTPUT_PREPROCESS) && (s->dflag & 16))
-        s->dflag |= t ? 32 : 0, s->run_test = ++t, n = s->nb_files;
+      || s->output_type == TCC_OUTPUT_PREPROCESS)
+        && (s->dflag & 16)) { /* -dt option */
+        if (t)
+            s->dflag |= 32;
+        s->run_test = ++t;
+        if (n)
+            --n;
+    }
 
     /* compile or add each files or library */
-    for (first_file = NULL, ret = 0;;) {
-        struct filespec *f = s->files[s->nb_files - n];
+    first_file = NULL, ret = 0;
+    do {
+        struct filespec *f = s->files[n];
         s->filetype = f->type;
-        s->alacarte_link = f->alacarte;
-        if (f->type == AFF_TYPE_LIB) {
+        if (f->type & AFF_TYPE_LIB) {
             if (tcc_add_library_err(s, f->name) < 0)
                 ret = 1;
         } else {
@@ -332,12 +342,8 @@ redo:
             if (tcc_add_file(s, f->name) < 0)
                 ret = 1;
         }
-        s->filetype = 0;
-        s->alacarte_link = 1;
-        if (--n == 0 || ret
-            || (s->output_type == TCC_OUTPUT_OBJ && !s->option_r))
-            break;
-    }
+        done = ret || ++n >= s->nb_files;
+    } while (!done && (s->output_type != TCC_OUTPUT_OBJ || s->option_r));
 
     if (s->run_test) {
         t = 0;
@@ -358,10 +364,10 @@ redo:
         }
     }
 
-    if (s->do_bench && (n | t | ret) == 0)
+    if (s->do_bench && done && !(t | ret))
         tcc_print_stats(s, getclock_ms() - start_time);
     tcc_delete(s);
-    if (ret == 0 && n)
+    if (!done)
         goto redo; /* compile more files with -c */
     if (t)
         goto redo; /* run more tests with -dt -run */

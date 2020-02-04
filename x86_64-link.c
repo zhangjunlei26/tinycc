@@ -22,6 +22,7 @@
 
 #include "tcc.h"
 
+#ifndef ELF_OBJ_ONLY
 /* Returns 1 for a code relocation, 0 for a data relocation. For unknown
    relocations, returns -1. */
 int code_reloc (int reloc_type)
@@ -51,8 +52,6 @@ int code_reloc (int reloc_type)
         case R_X86_64_JUMP_SLOT:
             return 1;
     }
-
-    tcc_error ("Unknown relocation type: %d", reloc_type);
     return -1;
 }
 
@@ -94,7 +93,6 @@ int gotplt_entry_type (int reloc_type)
             return ALWAYS_GOTPLT_ENTRY;
     }
 
-    tcc_error ("Unknown relocation type: %d", reloc_type);
     return -1;
 }
 
@@ -157,18 +155,12 @@ ST_FUNC void relocate_plt(TCCState *s1)
         add32le(p + 8, x - 6);
         p += 16;
         while (p < p_end) {
-            add32le(p + 2, x + s1->plt->data - p);
+            add32le(p + 2, x + (s1->plt->data - p));
             p += 16;
         }
     }
 }
-
-static ElfW_Rel *qrel; /* ptr to next reloc entry reused */
-
-void relocate_init(Section *sr)
-{
-    qrel = (ElfW_Rel *) sr->data;
-}
+#endif
 
 void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t addr, addr_t val)
 {
@@ -179,7 +171,7 @@ void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t 
     switch (type) {
         case R_X86_64_64:
             if (s1->output_type == TCC_OUTPUT_DLL) {
-                esym_index = s1->sym_attrs[sym_index].dyn_index;
+                esym_index = get_sym_attr(s1, sym_index, 0)->dyn_index;
                 qrel->r_offset = rel->r_offset;
                 if (esym_index) {
                     qrel->r_info = ELFW(R_INFO)(esym_index, R_X86_64_64);
@@ -199,6 +191,7 @@ void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t 
             if (s1->output_type == TCC_OUTPUT_DLL) {
                 /* XXX: this logic may depend on TCC's codegen
                    now TCC uses R_X86_64_32 even for a 64bit pointer */
+                qrel->r_offset = rel->r_offset;
                 qrel->r_info = ELFW(R_INFO)(0, R_X86_64_RELATIVE);
                 /* Use sign extension! */
                 qrel->r_addend = (int)read32le(ptr) + val;
@@ -210,7 +203,7 @@ void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t 
         case R_X86_64_PC32:
             if (s1->output_type == TCC_OUTPUT_DLL) {
                 /* DLL relocation */
-                esym_index = s1->sym_attrs[sym_index].dyn_index;
+                esym_index = get_sym_attr(s1, sym_index, 0)->dyn_index;
                 if (esym_index) {
                     qrel->r_offset = rel->r_offset;
                     qrel->r_info = ELFW(R_INFO)(esym_index, R_X86_64_PC32);
@@ -243,7 +236,7 @@ void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t 
         case R_X86_64_PC64:
             if (s1->output_type == TCC_OUTPUT_DLL) {
                 /* DLL relocation */
-                esym_index = s1->sym_attrs[sym_index].dyn_index;
+                esym_index = get_sym_attr(s1, sym_index, 0)->dyn_index;
                 if (esym_index) {
                     qrel->r_offset = rel->r_offset;
                     qrel->r_info = ELFW(R_INFO)(esym_index, R_X86_64_PC64);
@@ -264,7 +257,7 @@ void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t 
         case R_X86_64_GOTPCRELX:
         case R_X86_64_REX_GOTPCRELX:
             add32le(ptr, s1->got->sh_addr - addr +
-                         s1->sym_attrs[sym_index].got_offset - 4);
+                         get_sym_attr(s1, sym_index, 0)->got_offset - 4);
             break;
         case R_X86_64_GOTPC32:
             add32le(ptr, s1->got->sh_addr - addr + rel->r_addend);
@@ -277,11 +270,11 @@ void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t 
             break;
         case R_X86_64_GOT32:
             /* we load the got offset */
-            add32le(ptr, s1->sym_attrs[sym_index].got_offset);
+            add32le(ptr, get_sym_attr(s1, sym_index, 0)->got_offset);
             break;
         case R_X86_64_GOT64:
             /* we load the got offset */
-            add64le(ptr, s1->sym_attrs[sym_index].got_offset);
+            add64le(ptr, get_sym_attr(s1, sym_index, 0)->got_offset);
             break;
         case R_X86_64_GOTOFF64:
             add64le(ptr, val - s1->got->sh_addr);

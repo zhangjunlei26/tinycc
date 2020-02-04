@@ -12,7 +12,7 @@
 #define R_NUM      R_AARCH64_NUM
 
 #define ELF_START_ADDR 0x00400000
-#define ELF_PAGE_SIZE 0x1000
+#define ELF_PAGE_SIZE 0x10000
 
 #define PCRELATIVE_DLLPLT 1
 #define RELOCATE_DLLPLT 1
@@ -46,8 +46,6 @@ int code_reloc (int reloc_type)
         case R_AARCH64_JUMP_SLOT:
             return 1;
     }
-
-    tcc_error ("Unknown relocation type: %d", reloc_type);
     return -1;
 }
 
@@ -79,8 +77,6 @@ int gotplt_entry_type (int reloc_type)
         case R_AARCH64_LD64_GOT_LO12_NC:
             return ALWAYS_GOTPLT_ENTRY;
     }
-
-    tcc_error ("Unknown relocation type: %d", reloc_type);
     return -1;
 }
 
@@ -152,8 +148,6 @@ ST_FUNC void relocate_plt(TCCState *s1)
     }
 }
 
-void relocate_init(Section *sr) {}
-
 void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t addr, addr_t val)
 {
     int sym_index = ELFW(R_SYM)(rel->r_info);
@@ -215,7 +209,7 @@ void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t 
         case R_AARCH64_ADR_GOT_PAGE: {
             uint64_t off =
                 (((s1->got->sh_addr +
-                   s1->sym_attrs[sym_index].got_offset) >> 12) - (addr >> 12));
+                   get_sym_attr(s1, sym_index, 0)->got_offset) >> 12) - (addr >> 12));
             if ((off + ((uint64_t)1 << 20)) >> 21)
                 tcc_error("R_AARCH64_ADR_GOT_PAGE relocation failed");
             write32le(ptr, ((read32le(ptr) & 0x9f00001f) |
@@ -226,7 +220,7 @@ void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t 
             write32le(ptr,
                       ((read32le(ptr) & 0xfff803ff) |
                        ((s1->got->sh_addr +
-                         s1->sym_attrs[sym_index].got_offset) & 0xff8) << 7));
+                         get_sym_attr(s1, sym_index, 0)->got_offset) & 0xff8) << 7));
             return;
         case R_AARCH64_COPY:
             return;

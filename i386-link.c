@@ -22,6 +22,7 @@
 
 #include "tcc.h"
 
+#ifndef ELF_OBJ_ONLY
 /* Returns 1 for a code relocation, 0 for a data relocation. For unknown
    relocations, returns -1. */
 int code_reloc (int reloc_type)
@@ -44,8 +45,6 @@ int code_reloc (int reloc_type)
 	case R_386_JMP_SLOT:
             return 1;
     }
-
-    tcc_error ("Unknown relocation type: %d", reloc_type);
     return -1;
 }
 
@@ -81,8 +80,6 @@ int gotplt_entry_type (int reloc_type)
 	case R_386_PLT32:
             return ALWAYS_GOTPLT_ENTRY;
     }
-
-    tcc_error ("Unknown relocation type: %d", reloc_type);
     return -1;
 }
 
@@ -152,13 +149,7 @@ ST_FUNC void relocate_plt(TCCState *s1)
         }
     }
 }
-
-static ElfW_Rel *qrel; /* ptr to next reloc entry reused */
-
-void relocate_init(Section *sr)
-{
-    qrel = (ElfW_Rel *) sr->data;
-}
+#endif
 
 void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t addr, addr_t val)
 {
@@ -169,7 +160,7 @@ void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t 
     switch (type) {
         case R_386_32:
             if (s1->output_type == TCC_OUTPUT_DLL) {
-                esym_index = s1->sym_attrs[sym_index].dyn_index;
+                esym_index = get_sym_attr(s1, sym_index, 0)->dyn_index;
                 qrel->r_offset = rel->r_offset;
                 if (esym_index) {
                     qrel->r_info = ELFW(R_INFO)(esym_index, R_386_32);
@@ -185,7 +176,7 @@ void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t 
         case R_386_PC32:
             if (s1->output_type == TCC_OUTPUT_DLL) {
                 /* DLL relocation */
-                esym_index = s1->sym_attrs[sym_index].dyn_index;
+                esym_index = get_sym_attr(s1, sym_index, 0)->dyn_index;
                 if (esym_index) {
                     qrel->r_offset = rel->r_offset;
                     qrel->r_info = ELFW(R_INFO)(esym_index, R_386_PC32);
@@ -211,7 +202,7 @@ void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t 
         case R_386_GOT32:
         case R_386_GOT32X:
             /* we load the got offset */
-            add32le(ptr, s1->sym_attrs[sym_index].got_offset);
+            add32le(ptr, get_sym_attr(s1, sym_index, 0)->got_offset);
             return;
         case R_386_16:
             if (s1->output_format != TCC_OUTPUT_FORMAT_BINARY) {

@@ -59,7 +59,7 @@
 #define RC_F7      0x4000
 #endif
 #define RC_IRET    RC_R0  /* function return: integer register */
-#define RC_LRET    RC_R1  /* function return: second integer register */
+#define RC_IRE2    RC_R1  /* function return: second integer register */
 #define RC_FRET    RC_F0  /* function return: float register */
 
 /* pretty names for the registers */
@@ -89,7 +89,7 @@ enum {
 
 /* return registers for function */
 #define REG_IRET TREG_R0 /* single word int return register */
-#define REG_LRET TREG_R1 /* second word return register (for long long) */
+#define REG_IRE2 TREG_R1 /* second word return register (for long long) */
 #define REG_FRET TREG_F0 /* float return register */
 
 #ifdef TCC_ARM_EABI
@@ -132,6 +132,7 @@ enum {
 /******************************************************/
 #else /* ! TARGET_DEFS_ONLY */
 /******************************************************/
+#define USING_GLOBALS
 #include "tcc.h"
 
 enum float_abi float_abi;
@@ -170,7 +171,7 @@ ST_FUNC void arm_init(struct TCCState *s)
 
     float_abi = s->float_abi;
 #ifndef TCC_ARM_HARDFLOAT
-    tcc_warning("soft float ABI currently not supported: default to softfp");
+# warning "soft float ABI currently not supported: default to softfp"
 #endif
 }
 #else
@@ -382,11 +383,6 @@ void gsym_addr(int t, int a)
   }
 }
 
-void gsym(int t)
-{
-  gsym_addr(t, ind);
-}
-
 #ifdef TCC_ARM_VFP
 static uint32_t vfpr(int r)
 {
@@ -409,9 +405,9 @@ static uint32_t intr(int r)
     return 12;
   if(r >= TREG_R0 && r <= TREG_R3)
     return r - TREG_R0;
-  if (r >= TREG_SP && r <= TREG_LR)
-    return r + (13 - TREG_SP);
-  tcc_error("compiler error! register %i is no int register",r);
+  if (!(r >= TREG_SP && r <= TREG_LR))
+    tcc_error("compiler error! register %i is no int register",r);
+  return r + (13 - TREG_SP);
 }
 
 static void calcaddr(uint32_t *base, int *off, int *sgn, int maxoff, unsigned shift)
@@ -739,25 +735,28 @@ static void gadd_sp(int val)
 static void gcall_or_jmp(int is_jmp)
 {
   int r;
+  uint32_t x;
   if ((vtop->r & (VT_VALMASK | VT_LVAL)) == VT_CONST) {
-    uint32_t x;
     /* constant case */
-    x=encbranch(ind,ind+vtop->c.i,0);
-    if(x) {
-      if (vtop->r & VT_SYM) {
-	/* relocation case */
-	greloc(cur_text_section, vtop->sym, ind, R_ARM_PC24);
-      } else
-	put_elf_reloc(symtab_section, cur_text_section, ind, R_ARM_PC24, 0);
-      o(x|(is_jmp?0xE0000000:0xE1000000));
-    } else {
-      if(!is_jmp)
-	o(0xE28FE004); // add lr,pc,#4
-      o(0xE51FF004);   // ldr pc,[pc,#-4]
-      if (vtop->r & VT_SYM)
-	greloc(cur_text_section, vtop->sym, ind, R_ARM_ABS32);
-      o(vtop->c.i);
-    }
+	if(vtop->r & VT_SYM){
+		x=encbranch(ind,ind+vtop->c.i,0);
+		if(x) {
+		/* relocation case */
+		  greloc(cur_text_section, vtop->sym, ind, R_ARM_PC24);
+		  o(x|(is_jmp?0xE0000000:0xE1000000));
+		} else {
+			if(!is_jmp)
+				o(0xE28FE004); // add lr,pc,#4
+			o(0xE51FF004);   // ldr pc,[pc,#-4]
+			greloc(cur_text_section, vtop->sym, ind, R_ARM_ABS32);
+			o(vtop->c.i);
+		}
+	}else{
+		if(!is_jmp)
+			o(0xE28FE004); // add lr,pc,#4
+		o(0xE51FF004);   // ldr pc,[pc,#-4]
+		o(vtop->c.i);
+	}
   } else {
     /* otherwise, indirect call */
     r = gv(RC_INT);
@@ -1138,7 +1137,7 @@ again:
               /* XXX: implicit cast ? */
               size=4;
               if ((pplan->sval->type.t & VT_BTYPE) == VT_LLONG) {
-                lexpand_nr();
+                lexpand();
                 size = 8;
                 r = gv(RC_INT);
                 o(0xE52D0004|(intr(r)<<12)); /* push r */
@@ -1162,7 +1161,7 @@ again:
 
         case CORE_CLASS:
           if ((pplan->sval->type.t & VT_BTYPE) == VT_LLONG) {
-            lexpand_nr();
+            lexpand();
             gv(regmask(pplan->end));
             pplan->sval->r2 = vtop->r;
             vtop--;
@@ -1266,8 +1265,9 @@ void gfunc_call(int nb_args)
 }
 
 /* generate function prolog of type 't' */
-void gfunc_prolog(CType *func_type)
+void gfunc_prolog(Sym *func_sym)
 {
+  CType *func_type = &func_sym->type;
   Sym *sym,*sym2;
   int n, nf, size, align, rs, struct_ret = 0;
   int addr, pn, sn; /* pn=core, sn=stack */
@@ -1363,7 +1363,7 @@ from_stack:
       addr = (n + nf + sn) * 4;
       sn += size;
     }
-    sym_push(sym->v & ~SYM_FIELD, type, VT_LOCAL | lvalue_type(type->t),
+    sym_push(sym->v & ~SYM_FIELD, type, VT_LOCAL | VT_LVAL,
              addr + 12);
   }
   last_itod_magic=0;
@@ -1410,8 +1410,18 @@ void gfunc_epilog(void)
   }
 }
 
+ST_FUNC void gen_fill_nops(int bytes)
+{
+    if ((bytes & 3))
+      tcc_error("alignment of code section not multiple of 4");
+    while (bytes > 0) {
+	o(0xE1A00000);
+	bytes -= 4;
+    }
+}
+
 /* generate a jump to a label */
-int gjmp(int t)
+ST_FUNC int gjmp(int t)
 {
   int r;
   if (nocode_wanted)
@@ -1422,51 +1432,37 @@ int gjmp(int t)
 }
 
 /* generate a jump to a fixed address */
-void gjmp_addr(int a)
+ST_FUNC void gjmp_addr(int a)
 {
   gjmp(a);
 }
 
-/* generate a test. set 'inv' to invert test. Stack entry is popped */
-int gtst(int inv, int t)
+ST_FUNC int gjmp_cond(int op, int t)
 {
-  int v, r;
-  uint32_t op;
-
-  v = vtop->r & VT_VALMASK;
+  int r;
+  if (nocode_wanted)
+    return t;
   r=ind;
+  op=mapcc(op);
+  op|=encbranch(r,t,1);
+  o(op);
+  return r;
+}
 
-  if (nocode_wanted) {
-    ;
-  } else if (v == VT_CMP) {
-    op=mapcc(inv?negcc(vtop->c.i):vtop->c.i);
-    op|=encbranch(r,t,1);
-    o(op);
-    t=r;
-  } else if (v == VT_JMP || v == VT_JMPI) {
-    if ((v & 1) == inv) {
-      if(!vtop->c.i)
-	vtop->c.i=t;
-      else {
-	uint32_t *x;
-	int p,lp;
-	if(t) {
-          p = vtop->c.i;
-          do {
-	    p = decbranch(lp=p);
-          } while(p);
-	  x = (uint32_t *)(cur_text_section->data + lp);
-	  *x &= 0xff000000;
-	  *x |= encbranch(lp,t,1);
-	}
-	t = vtop->c.i;
-      }
-    } else {
-      t = gjmp(t);
-      gsym(vtop->c.i);
-    }
+ST_FUNC int gjmp_append(int n, int t)
+{
+  uint32_t *x;
+  int p,lp;
+  if(n) {
+    p = n;
+    do {
+      p = decbranch(lp=p);
+    } while(p);
+    x = (uint32_t *)(cur_text_section->data + lp);
+    *x &= 0xff000000;
+    *x |= encbranch(lp,t,1);
+    t = n;
   }
-  vtop--;
   return t;
 }
 
@@ -1546,7 +1542,7 @@ void gen_opi(int op)
     case '%':
 #ifdef TCC_ARM_EABI
       func=TOK___aeabi_idivmod;
-      retreg=REG_LRET;
+      retreg=REG_IRE2;
 #else
       func=TOK___modsi3;
 #endif
@@ -1555,7 +1551,7 @@ void gen_opi(int op)
     case TOK_UMOD:
 #ifdef TCC_ARM_EABI
       func=TOK___aeabi_uidivmod;
-      retreg=REG_LRET;
+      retreg=REG_IRE2;
 #else
       func=TOK___umodsi3;
 #endif
@@ -1603,10 +1599,8 @@ void gen_opi(int op)
       o(opc|(r<<12)|fr);
 done:
       vtop--;
-      if (op >= TOK_ULT && op <= TOK_GT) {
-        vtop->r = VT_CMP;
-        vtop->c.i = op;
-      }
+      if (op >= TOK_ULT && op <= TOK_GT)
+        vset_VT_CMP(op);
       break;
     case 2:
       opc=0xE1A00000|(opc<<5);
@@ -1722,9 +1716,7 @@ void gen_opf(int op)
         case TOK_UGE: op=TOK_GE; break;
         case TOK_UGT: op=TOK_GT; break;
       }
-
-      vtop->r = VT_CMP;
-      vtop->c.i = op;
+      vset_VT_CMP(op);
       return;
   }
   r=gv(RC_FLOAT);
@@ -1926,8 +1918,9 @@ void gen_opf(int op)
 	} else {
 	  r2=fpr(gv(RC_FLOAT));
 	}
-	vtop[-1].r = VT_CMP;
-	vtop[-1].c.i = op;
+        --vtop;
+        vset_VT_CMP(op);
+        ++vtop;
       } else {
         tcc_error("unknown fp op %x!",op);
 	return;
@@ -1949,7 +1942,7 @@ void gen_opf(int op)
 
 /* convert integers to fp 't' type. Must handle 'int', 'unsigned int'
    and 'long long' cases. */
-ST_FUNC void gen_cvt_itof1(int t)
+ST_FUNC void gen_cvt_itof(int t)
 {
   uint32_t r, r2;
   int bt;
@@ -2082,7 +2075,7 @@ void gen_cvt_ftoi(int t)
     gfunc_call(1);
     vpushi(0);
     if(t == VT_LLONG)
-      vtop->r2 = REG_LRET;
+      vtop->r2 = REG_IRE2;
     vtop->r = REG_IRET;
     return;
   }

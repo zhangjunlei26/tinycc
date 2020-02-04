@@ -87,6 +87,13 @@ union UV guv = {{6,5}};
 union UV guv2 = {{.b = 7, .a = 8}};
 union UV guv3 = {.b = 8, .a = 7};
 
+struct SSU {
+    int y;
+    struct { int x; };
+};
+struct SSU gssu1 = { .y = 5, .x = 3 };
+struct SSU gssu2 = { 5, 3 };
+
 /* Under -fms-extensions also the following is valid:
 union UV2 {
     struct Anon {u8 a,b;};    // unnamed member, but tagged struct, ...
@@ -166,6 +173,14 @@ void foo (struct W *w, struct pkthdr *phdr_)
   int elt = 0x42;
   /* Range init, overlapping */
   struct T lt2 = { { [1 ... 5] = 9, [6 ... 10] = elt, [4 ... 7] = elt+1 }, 1 };
+  struct SSU lssu1 = { 5, 3 };
+  struct SSU lssu2 = { .y = 5, .x = 3 };
+  /* designated initializers in GNU form */
+#if defined(__GNUC__) || defined(__TINYC__)
+  struct S ls4 = {a: 1, b: 2, c: {3, 4}};
+#else
+  struct S ls4 = {.a = 1, .b = 2, .c = {3, 4}};
+#endif
   print(ls);
   print(ls2);
   print(lt);
@@ -182,7 +197,10 @@ void foo (struct W *w, struct pkthdr *phdr_)
   print(lv2);
   print(lv3);
   print(lt2);
+  print(lssu1);
+  print(lssu2);
   print(flow);
+  print(ls4);
 }
 #endif
 
@@ -272,6 +290,8 @@ int main()
   print(guv.b);
   print(guv2);
   print(guv3);
+  print(gssu1);
+  print(gssu2);
   print(phdr);
   foo(&gw, &phdr);
   //printf("q: %s\n", q);

@@ -150,11 +150,46 @@ for opt do
   esac
 done
 
+cc="${cross_prefix}${cc}"
+ar="${cross_prefix}${ar}"
+strip="${cross_prefix}${strip}"
+
+
+PPIF_TEMPLATE="
+int ppif(void) {
+#if %s
+    return 0;
+#else
+    PPIF_FALSE;
+#endif
+}
+"
+
+# Succeeds when preprocessor condition `#if $1` is true.
+# if $2 is not empty, prints to stderr `checking whether $2... <yes/no>`
+# Works also when $cc is a cross compiler to any foreign platform.
+# E.g. ppif "defined(__GNUC__) && (GCC_MAJOR >= 3)"
+#   or ppif "defined(_WIN32)" "target is Windows"
+ppif() {
+    [ -z "${2-}" ] || printf "checking whether %s... " "$2" >&2
+    printf "$PPIF_TEMPLATE" "$1" > ppif.c \
+    && $cc -o ppif.o -c ppif.c 2>/dev/null
+    ppif_rv=$?
+    rm ppif.c ppif.o 2>/dev/null
+    [ -z "${2-}" ] || { [ 0 = $ppif_rv ] && echo yes || echo no; } >&2
+    return $ppif_rv
+}
+
+
 if test -z "$cpu" ; then
     if test -n "$ARCH" ; then
-	cpu="$ARCH"
+        cpu="$ARCH"
+    elif ppif "defined(__x86_64__)"; then
+        cpu="x86_64"
+    elif ppif "defined(__i386__)"; then
+        cpu="i386"
     else
-	cpu=`uname -m`
+        cpu=`uname -m`
     fi
 fi
 
@@ -196,6 +231,9 @@ case "$cpu" in
   ;;
   s390)
     cpu="s390"
+  ;;
+  riscv64)
+    cpu="riscv64"
   ;;
   *)
     echo "Unsupported CPU"
@@ -303,10 +341,6 @@ EOF
 exit 1
 fi
 
-cc="${cross_prefix}${cc}"
-ar="${cross_prefix}${ar}"
-strip="${cross_prefix}${strip}"
-
 if test -z "$cross_prefix" ; then
   CONFTEST=./conftest$EXESUF
   if ! $cc -o $CONFTEST $source_path/conftest.c 2>/dev/null ; then
@@ -326,7 +360,7 @@ if test -z "$cross_prefix" ; then
       fi
 
       if test -z "$triplet"; then
-        if test $cpu = "x86_64" -o $cpu = "aarch64" ; then
+        if test $cpu = "x86_64" -o $cpu = "aarch64" -o $cpu = "riscv64" ; then
           if test -f "/usr/lib64/crti.o" ; then
             tcc_lddir="lib64"
           fi
@@ -335,7 +369,7 @@ if test -z "$cross_prefix" ; then
 
       if test "$cpu" = "arm" ; then
 	if test "${triplet%eabihf}" != "$triplet" ; then
-	   confvars="$confvars arm_eabihf"
+	   confvars="$confvars arm_eabihf arm_vfp"
 	elif test "${triplet%eabi}" != "$triplet" ; then
 	   confvars="$confvars arm_eabi"
 	fi
@@ -368,7 +402,7 @@ fi
 if ! echo "$cc" | grep -q "tcc"; then
   OPT1="-Wdeclaration-after-statement -fno-strict-aliasing"
   # we want -Wno- but gcc does not always reject unknown -Wno- options
-  OPT2="-Wpointer-sign -Wsign-compare -Wunused-result"
+  OPT2="-Wpointer-sign -Wsign-compare -Wunused-result -Wformat-truncation"
   if echo "$cc" | grep -q "clang"; then
     OPT1="$OPT1 -fheinous-gnu-extensions"
     OPT2="$OPT2 -Wstring-plus-int"
